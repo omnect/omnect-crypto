@@ -1,4 +1,4 @@
-use anyhow::{Result};
+use anyhow::Result;
 
 #[derive(Clone)]
 pub struct Crypto {
@@ -23,7 +23,11 @@ impl Crypto {
         })
     }
 
-    pub fn new_cert_and_key(&self, name: &str, extensions: &Option<openssl::stack::Stack<openssl::x509::X509Extension>>) -> Result<(Vec<u8>, Vec<u8>)> {
+    pub fn new_cert_and_key(
+        &self,
+        name: &str,
+        extensions: &Option<openssl::stack::Stack<openssl::x509::X509Extension>>,
+    ) -> Result<(Vec<u8>, Vec<u8>)> {
         let key = match openssl::rsa::Rsa::generate(4096) {
             Ok(k) => k,
             Err(e) => {
@@ -67,7 +71,8 @@ impl Crypto {
         &self,
         pub_key: &openssl::pkey::PKey<openssl::pkey::Public>,
         cn: &str,
-        _extensions: &Option<openssl::stack::Stack<openssl::x509::X509Extension>>) -> Result<openssl::x509::X509> {
+        _extensions: &Option<openssl::stack::Stack<openssl::x509::X509Extension>>,
+    ) -> Result<openssl::x509::X509> {
         let serial_number = openssl::bn::BigNum::from_u32(1)?;
         let serial_number_asn = openssl::asn1::Asn1Integer::from_bn(&serial_number)?;
         let not_before = openssl::asn1::Asn1Time::days_from_now(0)?;
@@ -95,9 +100,9 @@ impl Crypto {
             .build()?;
         cert_builder.append_extension(bc)?;
         let eku = openssl::x509::extension::ExtendedKeyUsage::new()
-        .critical()
-        .client_auth()
-        .build()?;
+            .critical()
+            .client_auth()
+            .build()?;
         cert_builder.append_extension(eku)?;
         let ku = openssl::x509::extension::KeyUsage::new()
             .critical()
