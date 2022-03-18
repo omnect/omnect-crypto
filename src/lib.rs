@@ -22,7 +22,8 @@ impl Crypto {
             ca_cert_pem,
         })
     }
-    pub fn new_device(&self, name: &str) -> Result<(Vec<u8>, Vec<u8>)> {
+
+    pub fn new_cert_and_key(&self, name: &str, extensions: &Option<openssl::stack::Stack<openssl::x509::X509Extension>>) -> Result<(Vec<u8>, Vec<u8>)> {
         let key = match openssl::rsa::Rsa::generate(4096) {
             Ok(k) => k,
             Err(e) => {
@@ -36,17 +37,37 @@ impl Crypto {
 
         let pkey = openssl::pkey::PKey::from_rsa(pub_key)?;
 
-        let device_cert = self.new_cert(&pkey, &name)?;
+        let device_cert = self.new_cert(&pkey, &name, &extensions)?;
         let device_cert_pem = device_cert.to_pem()?;
 
         Ok((device_cert_pem, private_key_pem))
     }
 
+    // todo: what i want is to extract the extensions from the csr to
+    // handle them in the certificate generation.
+    // currently i adapted the certificate generation to what
+    // 'aziot-certd' expects, but imho the extensions should be a parameter
+    // to crypto::Crypto::new_cert.
+    //
+    // 'aziot-certd' provides 'BasicConstraints', 'ExtendedKeyUsage' and
+    // 'KeyUsage' in its csr.
+    //
+    // if the extensions are a parameter to new_cert we would need to
+    // parse them, so we know which extensions were provided and
+    // which we possibly have to add ourselves.  i guess it is to be
+    // discussed, if we want to add extensions in this case.
+    //
+    // currently I'm not able to parse the extensions:
+    //
+    // let extensions_stack_iter = extensions().unwrap().iter();
+    // for extension in extensions_stack_iter {
+    //     debug!("pkcs10 extensions: {:?}",&extension.how_to_get_the_extension_content_here?());
+    // }
     pub fn new_cert(
         &self,
         pub_key: &openssl::pkey::PKey<openssl::pkey::Public>,
         cn: &str,
-    ) -> Result<openssl::x509::X509> {
+        _extensions: &Option<openssl::stack::Stack<openssl::x509::X509Extension>>) -> Result<openssl::x509::X509> {
         let serial_number = openssl::bn::BigNum::from_u32(1)?;
         let serial_number_asn = openssl::asn1::Asn1Integer::from_bn(&serial_number)?;
         let not_before = openssl::asn1::Asn1Time::days_from_now(0)?;
@@ -69,17 +90,10 @@ impl Crypto {
         let issuer = self.ca_cert.subject_name();
         cert_builder.set_issuer_name(issuer)?;
 
-        // let bc = openssl::x509::extension::BasicConstraints::new()
-        //     .pathlen(0)
-        //     .build()?;
         let bc = openssl::x509::extension::BasicConstraints::new()
             .critical()
             .build()?;
         cert_builder.append_extension(bc)?;
-        // let eku = openssl::x509::extension::ExtendedKeyUsage::new()
-        //     .client_auth()
-        //     .email_protection()
-        //     .build()?;
         let eku = openssl::x509::extension::ExtendedKeyUsage::new()
         .critical()
         .client_auth()
@@ -157,7 +171,7 @@ mod tests {
         let ca_cert = cert_builder.build().to_pem()?;
 
         let crypto = super::Crypto::new(&private_key_pem, &ca_cert)?;
-        let (device_cert_pem, device_key_pem) = crypto.new_device("TestDevice")?;
+        let (device_cert_pem, device_key_pem) = crypto.new_cert_and_key("TestDevice", &None)?;
 
         // keys and certs need to be parseable PEM
         let device_private_key = openssl::rsa::Rsa::private_key_from_pem(&device_key_pem)?;
