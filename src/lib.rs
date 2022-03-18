@@ -27,6 +27,7 @@ impl Crypto {
         &self,
         name: &str,
         extensions: &Option<openssl::stack::Stack<openssl::x509::X509Extension>>,
+        days: u32,
     ) -> Result<(Vec<u8>, Vec<u8>)> {
         let key = match openssl::rsa::Rsa::generate(4096) {
             Ok(k) => k,
@@ -41,7 +42,7 @@ impl Crypto {
 
         let pkey = openssl::pkey::PKey::from_rsa(pub_key)?;
 
-        let device_cert = self.new_cert(&pkey, &name, &extensions)?;
+        let device_cert = self.new_cert(&pkey, &name, &extensions, days)?;
         let device_cert_pem = device_cert.to_pem()?;
 
         Ok((device_cert_pem, private_key_pem))
@@ -72,11 +73,12 @@ impl Crypto {
         pub_key: &openssl::pkey::PKey<openssl::pkey::Public>,
         cn: &str,
         _extensions: &Option<openssl::stack::Stack<openssl::x509::X509Extension>>,
+        days: u32,
     ) -> Result<openssl::x509::X509> {
         let serial_number = openssl::bn::BigNum::from_u32(1)?;
         let serial_number_asn = openssl::asn1::Asn1Integer::from_bn(&serial_number)?;
         let not_before = openssl::asn1::Asn1Time::days_from_now(0)?;
-        let not_after = openssl::asn1::Asn1Time::days_from_now(365 * 3)?;
+        let not_after = openssl::asn1::Asn1Time::days_from_now(days)?;
 
         let mut subject_name = openssl::x509::X509NameBuilder::new()?;
         subject_name.append_entry_by_text("C", "DE")?;
@@ -176,7 +178,7 @@ mod tests {
         let ca_cert = cert_builder.build().to_pem()?;
 
         let crypto = super::Crypto::new(&private_key_pem, &ca_cert)?;
-        let (device_cert_pem, device_key_pem) = crypto.new_cert_and_key("TestDevice", &None)?;
+        let (device_cert_pem, device_key_pem) = crypto.new_cert_and_key("TestDevice", &None, 1)?;
 
         // keys and certs need to be parseable PEM
         let device_private_key = openssl::rsa::Rsa::private_key_from_pem(&device_key_pem)?;
