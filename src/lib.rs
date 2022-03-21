@@ -1,40 +1,31 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
+use std::sync::Once;
+
+static OPENSSL_INIT_ONCE: Once = Once::new();
 
 #[derive(Clone)]
 pub struct Crypto {
-    pub ca_key: openssl::pkey::PKey<openssl::pkey::Private>,
-    pub ca_cert: openssl::x509::X509,
-    pub ca_cert_pem: Vec<u8>,
+    ca_key: openssl::pkey::PKey<openssl::pkey::Private>,
+    ca_cert: openssl::x509::X509,
 }
 
 impl Crypto {
-    pub fn init() {
-        openssl::init()
-    }
     pub fn new(ca_key: &[u8], ca_cert: &[u8]) -> Result<Self> {
-        let ca_cert_pem = ca_cert.to_vec();
+        OPENSSL_INIT_ONCE.call_once(|| openssl::init());
+
         let ca_key = openssl::rsa::Rsa::private_key_from_pem(ca_key)?;
         let ca_key = openssl::pkey::PKey::from_rsa(ca_key)?;
         let ca_cert = openssl::x509::X509::from_pem(ca_cert)?;
-        Ok(Crypto {
-            ca_key,
-            ca_cert,
-            ca_cert_pem,
-        })
+        Ok(Crypto { ca_key, ca_cert })
     }
 
-    pub fn new_cert_and_key(
+    pub fn create_cert_and_key(
         &self,
         name: &str,
         extensions: &Option<openssl::stack::Stack<openssl::x509::X509Extension>>,
         days: u32,
     ) -> Result<(Vec<u8>, Vec<u8>)> {
-        let key = match openssl::rsa::Rsa::generate(4096) {
-            Ok(k) => k,
-            Err(e) => {
-                panic!("Could not generate key: {:?}", e);
-            }
-        };
+        let key = openssl::rsa::Rsa::generate(4096).with_context(|| "Could not generate key.")?;
         let private_key_pem = key.private_key_to_pem()?;
 
         let pub_key =
@@ -42,7 +33,7 @@ impl Crypto {
 
         let pkey = openssl::pkey::PKey::from_rsa(pub_key)?;
 
-        let device_cert = self.new_cert(&pkey, &name, &extensions, days)?;
+        let device_cert = self.create_cert(&pkey, &name, &extensions, days)?;
         let device_cert_pem = device_cert.to_pem()?;
 
         Ok((device_cert_pem, private_key_pem))
@@ -52,12 +43,12 @@ impl Crypto {
     // handle them in the certificate generation.
     // currently i adapted the certificate generation to what
     // 'aziot-certd' expects, but imho the extensions should be a parameter
-    // to crypto::Crypto::new_cert.
+    // to crypto::Crypto::create_cert.
     //
     // 'aziot-certd' provides 'BasicConstraints', 'ExtendedKeyUsage' and
     // 'KeyUsage' in its csr.
     //
-    // if the extensions are a parameter to new_cert we would need to
+    // if the extensions are a parameter to create_cert we would need to
     // parse them, so we know which extensions were provided and
     // which we possibly have to add ourselves.  i guess it is to be
     // discussed, if we want to add extensions in this case.
@@ -68,7 +59,7 @@ impl Crypto {
     // for extension in extensions_stack_iter {
     //     debug!("pkcs10 extensions: {:?}",&extension.how_to_get_the_extension_content_here?());
     // }
-    pub fn new_cert(
+    pub fn create_cert(
         &self,
         pub_key: &openssl::pkey::PKey<openssl::pkey::Public>,
         cn: &str,
@@ -129,12 +120,7 @@ impl Crypto {
 mod tests {
     #[test]
     fn returns_valid_keys_and_certs() -> Result<(), anyhow::Error> {
-        let key = match openssl::rsa::Rsa::generate(4096) {
-            Ok(k) => k,
-            Err(e) => {
-                panic!("Could not generate key: {:?}", e);
-            }
-        };
+        let key = openssl::rsa::Rsa::generate(4096)?; // doesnt work in test context: .with_context(|| "Could not generate key.")?;
         let private_key_pem = key.private_key_to_pem()?;
 
         let serial_number = openssl::bn::BigNum::from_u32(1)?;
@@ -178,7 +164,8 @@ mod tests {
         let ca_cert = cert_builder.build().to_pem()?;
 
         let crypto = super::Crypto::new(&private_key_pem, &ca_cert)?;
-        let (device_cert_pem, device_key_pem) = crypto.new_cert_and_key("TestDevice", &None, 1)?;
+        let (device_cert_pem, device_key_pem) =
+            crypto.create_cert_and_key("TestDevice", &None, 1)?;
 
         // keys and certs need to be parseable PEM
         let device_private_key = openssl::rsa::Rsa::private_key_from_pem(&device_key_pem)?;
