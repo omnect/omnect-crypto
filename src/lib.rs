@@ -5,8 +5,8 @@ static OPENSSL_INIT_ONCE: Once = Once::new();
 
 #[derive(Clone)]
 pub struct Crypto {
-    ca_key: openssl::pkey::PKey<openssl::pkey::Private>,
-    ca_cert: openssl::x509::X509,
+    pub ca_key: openssl::pkey::PKey<openssl::pkey::Private>,
+    pub ca_cert: openssl::x509::X509,
 }
 
 impl Crypto {
