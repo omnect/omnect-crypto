@@ -88,10 +88,11 @@ impl Crypto {
         let issuer = self.ca_cert.subject_name();
         cert_builder.set_issuer_name(issuer)?;
 
-        let bc = openssl::x509::extension::BasicConstraints::new()
+        let basic_constraints = openssl::x509::extension::BasicConstraints::new()
             .critical()
+            .pathlen(0)
             .build()?;
-        cert_builder.append_extension(bc)?;
+        cert_builder.append_extension(basic_constraints)?;
         let eku = openssl::x509::extension::ExtendedKeyUsage::new()
             .critical()
             .client_auth()
@@ -141,25 +142,25 @@ mod tests {
         cert_builder.set_pubkey(&pkey)?;
         let issuer = subject_name; // self signed certificate
         cert_builder.set_issuer_name(&issuer)?;
-        let bc = openssl::x509::extension::BasicConstraints::new()
+        let basic_constraints = openssl::x509::extension::BasicConstraints::new()
             .ca()
             .critical()
             .build()?;
-        cert_builder.append_extension(bc)?;
-        let ku = openssl::x509::extension::KeyUsage::new()
+        cert_builder.append_extension(basic_constraints)?;
+        let key_usage = openssl::x509::extension::KeyUsage::new()
             .critical()
             .key_cert_sign()
             .crl_sign()
             .digital_signature()
             .build()?;
-        cert_builder.append_extension(ku)?;
-        let ski = openssl::x509::extension::SubjectKeyIdentifier::new()
+        cert_builder.append_extension(key_usage)?;
+        let subject_key_identitfier = openssl::x509::extension::SubjectKeyIdentifier::new()
             .build(&cert_builder.x509v3_context(None, None))?;
-        cert_builder.append_extension(ski)?;
-        let aki = openssl::x509::extension::AuthorityKeyIdentifier::new()
+        cert_builder.append_extension(subject_key_identitfier)?;
+        let authority_key_identifier = openssl::x509::extension::AuthorityKeyIdentifier::new()
             .keyid(true)
             .build(&cert_builder.x509v3_context(None, None))?;
-        cert_builder.append_extension(aki)?;
+        cert_builder.append_extension(authority_key_identifier)?;
         cert_builder.sign(&pkey, openssl::hash::MessageDigest::sha256())?;
         let ca_cert = cert_builder.build().to_pem()?;
 
