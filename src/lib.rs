@@ -113,7 +113,23 @@ impl Crypto {
             .build(&cert_builder.x509v3_context(Some(&self.ca_cert), None))?;
         cert_builder.append_extension(aki)?;
         cert_builder.sign(&self.ca_key, openssl::hash::MessageDigest::sha256())?;
-        Ok(cert_builder.build())
+        let created_cert = cert_builder.build();
+
+        // check validity of generated device certificate
+        let mut truststore_builder = openssl::x509::store::X509StoreBuilder::new()?;
+        truststore_builder.add_cert(self.ca_cert.clone())?;
+        let truststore = truststore_builder.build();
+        let mut truststore_context = openssl::x509::X509StoreContext::new()?;
+        let empty_cert_chain = openssl::stack::Stack::new()?;
+        if !truststore_context.init(&truststore, &created_cert, &empty_cert_chain, |c| {
+            c.verify_cert()
+        })? {
+            return Err(anyhow::anyhow!(
+                "couldn't verify generated certificate against ca chain",
+            ));
+        }
+
+        Ok(created_cert)
     }
 }
 
