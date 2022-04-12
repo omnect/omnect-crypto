@@ -6,7 +6,8 @@ static OPENSSL_INIT_ONCE: Once = Once::new();
 #[derive(Clone)]
 pub struct Crypto {
     pub ca_key: openssl::pkey::PKey<openssl::pkey::Private>,
-    pub ca_cert: openssl::x509::X509,
+    pub ca_cert_stack: Vec<openssl::x509::X509>,
+    pub verify_flags: openssl::x509::verify::X509VerifyFlags,
 }
 
 impl Crypto {
@@ -15,8 +16,17 @@ impl Crypto {
 
         let ca_key = openssl::rsa::Rsa::private_key_from_pem(ca_key)?;
         let ca_key = openssl::pkey::PKey::from_rsa(ca_key)?;
-        let ca_cert = openssl::x509::X509::from_pem(ca_cert)?;
-        Ok(Crypto { ca_key, ca_cert })
+        let ca_cert_stack = openssl::x509::X509::stack_from_pem(ca_cert)?;
+        let verify_flags = openssl::x509::verify::X509VerifyFlags::CRL_CHECK_ALL
+            | openssl::x509::verify::X509VerifyFlags::POLICY_CHECK
+            | openssl::x509::verify::X509VerifyFlags::EXTENDED_CRL_SUPPORT
+            | openssl::x509::verify::X509VerifyFlags::USE_DELTAS;
+
+        Ok(Crypto {
+            ca_key,
+            ca_cert_stack,
+            verify_flags,
+        })
     }
 
     pub fn create_cert_and_key(
@@ -85,7 +95,8 @@ impl Crypto {
         cert_builder.set_serial_number(&serial_number_asn)?;
         cert_builder.set_subject_name(&subject_name)?;
         cert_builder.set_pubkey(pub_key)?;
-        let issuer = self.ca_cert.subject_name();
+        let ca_cert = self.ca_cert_stack.first().unwrap(); // safe here
+        let issuer = ca_cert.subject_name();
         cert_builder.set_issuer_name(issuer)?;
 
         let basic_constraints = openssl::x509::extension::BasicConstraints::new()
@@ -106,30 +117,35 @@ impl Crypto {
             .build()?;
         cert_builder.append_extension(ku)?;
         let ski = openssl::x509::extension::SubjectKeyIdentifier::new()
-            .build(&cert_builder.x509v3_context(Some(&self.ca_cert), None))?;
+            .build(&cert_builder.x509v3_context(Some(ca_cert), None))?;
         cert_builder.append_extension(ski)?;
         let aki = openssl::x509::extension::AuthorityKeyIdentifier::new()
             .keyid(true)
-            .build(&cert_builder.x509v3_context(Some(&self.ca_cert), None))?;
+            .build(&cert_builder.x509v3_context(Some(ca_cert.as_ref()), None))?;
         cert_builder.append_extension(aki)?;
         cert_builder.sign(&self.ca_key, openssl::hash::MessageDigest::sha256())?;
         let created_cert = cert_builder.build();
+        self.verify_cert(&created_cert.to_pem()?)?;
+        Ok(created_cert)
+    }
 
-        // check validity of generated device certificate
+    pub fn verify_cert(&self, cert: &[u8]) -> Result<(), anyhow::Error> {
+        let cert = openssl::x509::X509::from_pem(cert)?;
         let mut truststore_builder = openssl::x509::store::X509StoreBuilder::new()?;
-        truststore_builder.add_cert(self.ca_cert.clone())?;
+        for i in self.ca_cert_stack.iter() {
+            truststore_builder.add_cert(i.clone())?;
+        }
+        truststore_builder.set_flags(self.verify_flags)?;
         let truststore = truststore_builder.build();
         let mut truststore_context = openssl::x509::X509StoreContext::new()?;
         let empty_cert_chain = openssl::stack::Stack::new()?;
-        if !truststore_context.init(&truststore, &created_cert, &empty_cert_chain, |c| {
-            c.verify_cert()
-        })? {
+
+        if !truststore_context.init(&truststore, &cert, &empty_cert_chain, |c| c.verify_cert())? {
             return Err(anyhow::anyhow!(
                 "couldn't verify generated certificate against ca chain",
             ));
         }
-
-        Ok(created_cert)
+        Ok(())
     }
 }
 
