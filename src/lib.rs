@@ -142,7 +142,8 @@ impl Crypto {
 
         if !truststore_context.init(&truststore, &cert, &empty_cert_chain, |c| c.verify_cert())? {
             return Err(anyhow::anyhow!(
-                "couldn't verify generated certificate against ca chain",
+                "couldn't verify certificate against ca chain, reason: {}",
+                truststore_context.error(),
             ));
         }
         Ok(())
