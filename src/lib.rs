@@ -148,54 +148,100 @@ impl Crypto {
         }
         Ok(())
     }
+
+    pub fn get_csr_builder(
+        &self,
+        client_cert: &openssl::x509::X509,
+        client_key: &openssl::pkey::PKey<openssl::pkey::Private>,
+    ) -> Result<openssl::x509::X509ReqBuilder> {
+        let mut exts = openssl::stack::Stack::new()?;
+        exts.push(
+            openssl::x509::extension::ExtendedKeyUsage::new()
+                .client_auth()
+                .build()?,
+        )?;
+        let mut csr_builder = openssl::x509::X509Req::builder()?;
+        csr_builder.set_version(0)?;
+        csr_builder.set_subject_name(client_cert.subject_name())?;
+        csr_builder.add_extensions(&exts)?;
+        csr_builder.set_pubkey(&client_key)?;
+        csr_builder.sign(&client_key, openssl::hash::MessageDigest::sha256())?;
+
+        Ok(csr_builder)
+    }
+
+    pub fn create_csr(&self, cert_key_pem: &[u8], cert_pem: &[u8]) -> Result<Vec<u8>> {
+        let client_cert = openssl::x509::X509::from_pem(cert_pem)?;
+        let client_key = openssl::rsa::Rsa::private_key_from_pem(cert_key_pem)?;
+        let client_key = openssl::pkey::PKey::from_rsa(client_key)?;
+
+        let csr_builder = self.get_csr_builder(&client_cert, &client_key)?;
+
+        Ok(csr_builder.build().to_pem()?)
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn returns_valid_keys_and_certs() -> Result<(), anyhow::Error> {
-        let key = openssl::rsa::Rsa::generate(4096)?; // doesnt work in test context: .with_context(|| "Could not generate key.")?;
-        let private_key_pem = key.private_key_to_pem()?;
+    fn create_cert_from_scatch(key: &openssl::rsa::Rsa<openssl::pkey::Private>) -> Vec<u8> {
+        let serial_number = openssl::bn::BigNum::from_u32(1).unwrap();
+        let serial_number_asn = openssl::asn1::Asn1Integer::from_bn(&serial_number).unwrap();
+        let not_before = openssl::asn1::Asn1Time::days_from_now(0).unwrap();
+        let not_after = openssl::asn1::Asn1Time::days_from_now(1).unwrap();
 
-        let serial_number = openssl::bn::BigNum::from_u32(1)?;
-        let serial_number_asn = openssl::asn1::Asn1Integer::from_bn(&serial_number)?;
-        let not_before = openssl::asn1::Asn1Time::days_from_now(0)?;
-        let not_after = openssl::asn1::Asn1Time::days_from_now(1)?;
-
-        let mut subject_name = openssl::x509::X509NameBuilder::new()?;
-        subject_name.append_entry_by_text("CN", "test_ca_cert")?;
+        let mut subject_name = openssl::x509::X509NameBuilder::new().unwrap();
+        subject_name
+            .append_entry_by_text("CN", "test_ca_cert")
+            .unwrap();
         let subject_name = subject_name.build();
-        let mut cert_builder = openssl::x509::X509Builder::new()?;
-        cert_builder.set_version(2)?;
-        cert_builder.set_not_before(&not_before)?;
-        cert_builder.set_not_after(&not_after)?;
-        cert_builder.set_serial_number(&serial_number_asn)?;
-        cert_builder.set_subject_name(&subject_name)?;
-        let pkey = openssl::pkey::PKey::from_rsa(key.clone())?;
-        cert_builder.set_pubkey(&pkey)?;
+        let mut cert_builder = openssl::x509::X509Builder::new().unwrap();
+        cert_builder.set_version(2).unwrap();
+        cert_builder.set_not_before(&not_before).unwrap();
+        cert_builder.set_not_after(&not_after).unwrap();
+        cert_builder.set_serial_number(&serial_number_asn).unwrap();
+        cert_builder.set_subject_name(&subject_name).unwrap();
+        let pkey = openssl::pkey::PKey::from_rsa(key.clone()).unwrap();
+        cert_builder.set_pubkey(&pkey).unwrap();
         let issuer = subject_name; // self signed certificate
-        cert_builder.set_issuer_name(&issuer)?;
+        cert_builder.set_issuer_name(&issuer).unwrap();
         let basic_constraints = openssl::x509::extension::BasicConstraints::new()
             .ca()
             .critical()
-            .build()?;
-        cert_builder.append_extension(basic_constraints)?;
+            .build()
+            .unwrap();
+        cert_builder.append_extension(basic_constraints).unwrap();
         let key_usage = openssl::x509::extension::KeyUsage::new()
             .critical()
             .key_cert_sign()
             .crl_sign()
             .digital_signature()
-            .build()?;
-        cert_builder.append_extension(key_usage)?;
+            .build()
+            .unwrap();
+        cert_builder.append_extension(key_usage).unwrap();
         let subject_key_identitfier = openssl::x509::extension::SubjectKeyIdentifier::new()
-            .build(&cert_builder.x509v3_context(None, None))?;
-        cert_builder.append_extension(subject_key_identitfier)?;
+            .build(&cert_builder.x509v3_context(None, None))
+            .unwrap();
+        cert_builder
+            .append_extension(subject_key_identitfier)
+            .unwrap();
         let authority_key_identifier = openssl::x509::extension::AuthorityKeyIdentifier::new()
             .keyid(true)
-            .build(&cert_builder.x509v3_context(None, None))?;
-        cert_builder.append_extension(authority_key_identifier)?;
-        cert_builder.sign(&pkey, openssl::hash::MessageDigest::sha256())?;
-        let ca_cert = cert_builder.build().to_pem()?;
+            .build(&cert_builder.x509v3_context(None, None))
+            .unwrap();
+        cert_builder
+            .append_extension(authority_key_identifier)
+            .unwrap();
+        cert_builder
+            .sign(&pkey, openssl::hash::MessageDigest::sha256())
+            .unwrap();
+        cert_builder.build().to_pem().unwrap()
+    }
+
+    #[test]
+    fn returns_valid_keys_and_certs() -> Result<(), anyhow::Error> {
+        let key = openssl::rsa::Rsa::generate(4096)?; // doesnt work in test context: .with_context(|| "Could not generate key.")?;
+        let private_key_pem = key.private_key_to_pem()?;
+        let ca_cert = create_cert_from_scatch(&key);
 
         let crypto = super::Crypto::new(&private_key_pem, &ca_cert)?;
         let (device_cert_pem, device_key_pem) =
@@ -217,5 +263,22 @@ mod tests {
             "sha256WithRSAEncryption"
         );
         Ok(())
+    }
+
+    #[test]
+    fn returns_valid_csr() {
+        let key = openssl::rsa::Rsa::generate(4096).unwrap();
+        let private_key_pem = key.private_key_to_pem().unwrap();
+        let cert_pem = create_cert_from_scatch(&key);
+        let crypto = super::Crypto::new(&private_key_pem, &cert_pem).unwrap();
+        let csr = crypto.create_csr(&private_key_pem, &cert_pem).unwrap();
+        let cert = crypto.ca_cert_stack.first().unwrap();
+        let csr = openssl::x509::X509Req::from_pem(&csr).unwrap();
+        let csr_subject = csr.subject_name().to_der().unwrap();
+        let cert_subject = cert.subject_name().to_der().unwrap();
+
+        assert!(csr.verify(csr.public_key().unwrap().as_ref()).unwrap());
+        assert!(csr.verify(cert.public_key().unwrap().as_ref()).unwrap());
+        assert_eq!(csr_subject, cert_subject);
     }
 }
