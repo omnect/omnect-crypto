@@ -1,4 +1,4 @@
-# ics-dm-crypto
+# omnect-crypto
 This repository provides a small crate to generate new certificates from a given chained certificate and key.
 
 # License
