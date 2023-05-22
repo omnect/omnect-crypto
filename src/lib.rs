@@ -149,10 +149,9 @@ impl Crypto {
         Ok(())
     }
 
-    pub fn get_csr_builder(
-        &self,
-        client_cert: &openssl::x509::X509,
+    pub fn get_csr_builder_from_key_and_cert(
         client_key: &openssl::pkey::PKey<openssl::pkey::Private>,
+        client_cert: &openssl::x509::X509,
     ) -> Result<openssl::x509::X509ReqBuilder> {
         let mut exts = openssl::stack::Stack::new()?;
         exts.push(
@@ -164,20 +163,32 @@ impl Crypto {
         csr_builder.set_version(0)?;
         csr_builder.set_subject_name(client_cert.subject_name())?;
         csr_builder.add_extensions(&exts)?;
-        csr_builder.set_pubkey(&client_key)?;
-        csr_builder.sign(&client_key, openssl::hash::MessageDigest::sha256())?;
+        csr_builder.set_pubkey(client_key)?;
+        csr_builder.sign(client_key, openssl::hash::MessageDigest::sha256())?;
 
         Ok(csr_builder)
     }
 
-    pub fn create_csr(&self, cert_key_pem: &[u8], cert_pem: &[u8]) -> Result<Vec<u8>> {
+    pub fn create_csr_from_key_and_cert_raw(
+        cert_key_pem: &[u8],
+        cert_pem: &[u8],
+    ) -> Result<Vec<u8>> {
         let client_cert = openssl::x509::X509::from_pem(cert_pem)?;
         let client_key = openssl::rsa::Rsa::private_key_from_pem(cert_key_pem)?;
         let client_key = openssl::pkey::PKey::from_rsa(client_key)?;
 
-        let csr_builder = self.get_csr_builder(&client_cert, &client_key)?;
+        let csr_builder = Self::get_csr_builder_from_key_and_cert(&client_key,
+                                                                  &client_cert)?;
 
         Ok(csr_builder.build().to_pem()?)
+    }
+
+    pub fn get_csr_builder(&self) -> Result<openssl::x509::X509ReqBuilder> {
+        let key = &self.ca_key;
+        let cert = self.ca_cert_stack.first().ok_or_else(|| anyhow::anyhow!("empty ca cert chain"))?;
+        let csr_builder = Self::get_csr_builder_from_key_and_cert(key, cert)?;
+
+        Ok(csr_builder)
     }
 }
 
@@ -271,7 +282,7 @@ mod tests {
         let private_key_pem = key.private_key_to_pem().unwrap();
         let cert_pem = create_cert_from_scatch(&key);
         let crypto = super::Crypto::new(&private_key_pem, &cert_pem).unwrap();
-        let csr = crypto.create_csr(&private_key_pem, &cert_pem).unwrap();
+        let csr = super::Crypto::create_csr_from_key_and_cert_raw(&private_key_pem, &cert_pem).unwrap();
         let cert = crypto.ca_cert_stack.first().unwrap();
         let csr = openssl::x509::X509Req::from_pem(&csr).unwrap();
         let csr_subject = csr.subject_name().to_der().unwrap();
