@@ -12,7 +12,7 @@ pub struct Crypto {
 
 impl Crypto {
     pub fn new(ca_key: &[u8], ca_cert: &[u8]) -> Result<Self> {
-        OPENSSL_INIT_ONCE.call_once(|| openssl::init());
+        OPENSSL_INIT_ONCE.call_once(openssl::init);
 
         let ca_key = openssl::rsa::Rsa::private_key_from_pem(ca_key)?;
         let ca_key = openssl::pkey::PKey::from_rsa(ca_key)?;
@@ -43,7 +43,7 @@ impl Crypto {
 
         let pkey = openssl::pkey::PKey::from_rsa(pub_key)?;
 
-        let device_cert = self.create_cert(&pkey, &name, &extensions, days)?;
+        let device_cert = self.create_cert(&pkey, name, extensions, days)?;
         let device_cert_pem = device_cert.to_pem()?;
 
         Ok((device_cert_pem, private_key_pem))
@@ -177,15 +177,17 @@ impl Crypto {
         let client_key = openssl::rsa::Rsa::private_key_from_pem(cert_key_pem)?;
         let client_key = openssl::pkey::PKey::from_rsa(client_key)?;
 
-        let csr_builder = Self::get_csr_builder_from_key_and_cert(&client_key,
-                                                                  &client_cert)?;
+        let csr_builder = Self::get_csr_builder_from_key_and_cert(&client_key, &client_cert)?;
 
         Ok(csr_builder.build().to_pem()?)
     }
 
     pub fn get_csr_builder(&self) -> Result<openssl::x509::X509ReqBuilder> {
         let key = &self.ca_key;
-        let cert = self.ca_cert_stack.first().ok_or_else(|| anyhow::anyhow!("empty ca cert chain"))?;
+        let cert = self
+            .ca_cert_stack
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("empty ca cert chain"))?;
         let csr_builder = Self::get_csr_builder_from_key_and_cert(key, cert)?;
 
         Ok(csr_builder)
@@ -282,7 +284,8 @@ mod tests {
         let private_key_pem = key.private_key_to_pem().unwrap();
         let cert_pem = create_cert_from_scatch(&key);
         let crypto = super::Crypto::new(&private_key_pem, &cert_pem).unwrap();
-        let csr = super::Crypto::create_csr_from_key_and_cert_raw(&private_key_pem, &cert_pem).unwrap();
+        let csr =
+            super::Crypto::create_csr_from_key_and_cert_raw(&private_key_pem, &cert_pem).unwrap();
         let cert = crypto.ca_cert_stack.first().unwrap();
         let csr = openssl::x509::X509Req::from_pem(&csr).unwrap();
         let csr_subject = csr.subject_name().to_der().unwrap();
