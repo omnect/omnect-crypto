@@ -12,7 +12,7 @@ pub struct Crypto {
 
 impl Crypto {
     pub fn new(ca_key: &[u8], ca_cert: &[u8]) -> Result<Self> {
-        OPENSSL_INIT_ONCE.call_once(|| openssl::init());
+        OPENSSL_INIT_ONCE.call_once(openssl::init);
 
         let ca_key = openssl::rsa::Rsa::private_key_from_pem(ca_key)?;
         let ca_key = openssl::pkey::PKey::from_rsa(ca_key)?;
@@ -43,7 +43,7 @@ impl Crypto {
 
         let pkey = openssl::pkey::PKey::from_rsa(pub_key)?;
 
-        let device_cert = self.create_cert(&pkey, &name, &extensions, days)?;
+        let device_cert = self.create_cert(&pkey, name, extensions, days)?;
         let device_cert_pem = device_cert.to_pem()?;
 
         Ok((device_cert_pem, private_key_pem))
