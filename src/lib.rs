@@ -1,5 +1,4 @@
 use anyhow::{Context, Result};
-use rsa::pkcs1::DecodeRsaPrivateKey;
 use std::sync::Once;
 
 static OPENSSL_INIT_ONCE: Once = Once::new();
@@ -208,7 +207,7 @@ impl Crypto2 {
 
         //OPENSSL_INIT_ONCE.call_once(openssl::init);
 
-        let ca_key = rsa::RsaPrivateKey::from_pkcs1_der(ca_key)?;
+        let ca_key = rsa::pkcs1::DecodeRsaPrivateKey::from_pkcs1_der(ca_key)?;
         let ca_cert_stack = x509_cert::Certificate::load_pem_chain(ca_cert)?;
 /*         let verify_flags = openssl::x509::verify::X509VerifyFlags::CRL_CHECK_ALL
             | openssl::x509::verify::X509VerifyFlags::POLICY_CHECK
