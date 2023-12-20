@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use rsa::pkcs1::DecodeRsaPrivateKey;
 use std::sync::Once;
 
 static OPENSSL_INIT_ONCE: Once = Once::new();
@@ -191,6 +192,54 @@ impl Crypto {
         let csr_builder = Self::get_csr_builder_from_key_and_cert(key, cert)?;
 
         Ok(csr_builder)
+    }
+}
+
+#[derive(Clone)]
+pub struct Crypto2 {
+    pub ca_key: rsa::RsaPrivateKey,
+    pub ca_cert_stack: Vec<x509_cert::certificate::CertificateInner>,
+    //pub verify_flags: openssl::x509::verify::X509VerifyFlags,
+}
+
+impl Crypto2 {
+    pub fn new(ca_key: &[u8], ca_cert: &[u8]) -> Result<Self> {
+        
+
+        //OPENSSL_INIT_ONCE.call_once(openssl::init);
+
+        let ca_key = rsa::RsaPrivateKey::from_pkcs1_der(ca_key)?;
+        let ca_cert_stack = x509_cert::Certificate::load_pem_chain(ca_cert)?;
+/*         let verify_flags = openssl::x509::verify::X509VerifyFlags::CRL_CHECK_ALL
+            | openssl::x509::verify::X509VerifyFlags::POLICY_CHECK
+            | openssl::x509::verify::X509VerifyFlags::EXTENDED_CRL_SUPPORT
+            | openssl::x509::verify::X509VerifyFlags::USE_DELTAS; */
+
+        Ok(Crypto2 {
+            ca_key,
+            ca_cert_stack,
+            //verify_flags,
+        })
+    }
+
+    pub fn verify_cert(&self, cert: &[u8]) -> Result<(), anyhow::Error> {
+/*         let cert = openssl::x509::X509::from_pem(cert)?;
+        let mut truststore_builder = openssl::x509::store::X509StoreBuilder::new()?;
+        for i in self.ca_cert_stack.iter() {
+            truststore_builder.add_cert(i.clone())?;
+        }
+        truststore_builder.set_flags(self.verify_flags)?;
+        let truststore = truststore_builder.build();
+        let mut truststore_context = openssl::x509::X509StoreContext::new()?;
+        let empty_cert_chain = openssl::stack::Stack::new()?;
+
+        if !truststore_context.init(&truststore, &cert, &empty_cert_chain, |c| c.verify_cert())? {
+            return Err(anyhow::anyhow!(
+                "couldn't verify certificate against ca chain, reason: {}",
+                truststore_context.error(),
+            ));
+        } */
+        Ok(())
     }
 }
 
