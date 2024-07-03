@@ -1,7 +1,13 @@
 [package]
-name = "omnect-crypto"
-version = "0.4.1"
+authors = ["omnect@conplement.de"]
+description = "Library for omnect related crypto functionality"
 edition = "2021"
+homepage = "https://www.omnect.io/home"
+license = "MIT OR Apache-2.0"
+name = "omnect-crypto"
+readme = "README.md"
+repository = "https://github.com/omnect/omnect-crypto.git"
+version = "0.4.2"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
