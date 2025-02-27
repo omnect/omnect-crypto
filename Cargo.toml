@@ -16,3 +16,13 @@ anyhow = "1"
 log = "0.4"
 openssl = "0.10"
 openssl-sys = "0.9"
+x509-parser = "0.15"
+der = "0.7"
+byteorder = "1.5"
+
+[dependencies.der-parser]
+version = "8.1.0"
+features = ["bigint"]
+
+[dev-dependencies]
+env_logger = "*"

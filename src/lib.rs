@@ -1,5 +1,11 @@
 use anyhow::{Context, Result};
 use std::sync::Once;
+use x509_parser::prelude::FromDer;
+use x509_parser::extensions::ParsedExtension;
+use std::io::Cursor;
+use byteorder::{BigEndian, ReadBytesExt};
+use log::debug;
+use der_parser::oid;
 
 static OPENSSL_INIT_ONCE: Once = Once::new();
 
@@ -32,7 +38,6 @@ impl Crypto {
     pub fn create_cert_and_key(
         &self,
         name: &str,
-        extensions: &Option<openssl::stack::Stack<openssl::x509::X509Extension>>,
         days: u32,
     ) -> Result<(Vec<u8>, Vec<u8>)> {
         let key = openssl::rsa::Rsa::generate(4096).with_context(|| "Could not generate key.")?;
@@ -43,62 +48,16 @@ impl Crypto {
 
         let pkey = openssl::pkey::PKey::from_rsa(pub_key)?;
 
-        let device_cert = self.create_cert(&pkey, name, extensions, days)?;
+        let device_cert = self.create_cert(&pkey, name, &None, days)?;
         let device_cert_pem = device_cert.to_pem()?;
 
         Ok((device_cert_pem, private_key_pem))
     }
 
-    // todo: what i want is to extract the extensions from the csr to
-    // handle them in the certificate generation.
-    // currently i adapted the certificate generation to what
-    // 'aziot-certd' expects, but imho the extensions should be a parameter
-    // to crypto::Crypto::create_cert.
-    //
-    // 'aziot-certd' provides 'BasicConstraints', 'ExtendedKeyUsage' and
-    // 'KeyUsage' in its csr.
-    //
-    // if the extensions are a parameter to create_cert we would need to
-    // parse them, so we know which extensions were provided and
-    // which we possibly have to add ourselves.  i guess it is to be
-    // discussed, if we want to add extensions in this case.
-    //
-    // currently I'm not able to parse the extensions:
-    //
-    // let extensions_stack_iter = extensions().unwrap().iter();
-    // for extension in extensions_stack_iter {
-    //     debug!("pkcs10 extensions: {:?}",&extension.how_to_get_the_extension_content_here?());
-    // }
-    pub fn create_cert(
+    pub fn default_extensions(
         &self,
-        pub_key: &openssl::pkey::PKey<openssl::pkey::Public>,
-        cn: &str,
-        _extensions: &Option<openssl::stack::Stack<openssl::x509::X509Extension>>,
-        days: u32,
-    ) -> Result<openssl::x509::X509> {
-        let serial_number = openssl::bn::BigNum::from_u32(1)?;
-        let serial_number_asn = openssl::asn1::Asn1Integer::from_bn(&serial_number)?;
-        let not_before = openssl::asn1::Asn1Time::days_from_now(0)?;
-        let not_after = openssl::asn1::Asn1Time::days_from_now(days)?;
-
-        let mut subject_name = openssl::x509::X509NameBuilder::new()?;
-        subject_name.append_entry_by_text("C", "DE")?;
-        subject_name.append_entry_by_text("ST", "BY")?;
-        subject_name.append_entry_by_text("O", "conplement AG")?;
-        subject_name.append_entry_by_text("CN", cn)?;
-        let subject_name = subject_name.build();
-
-        let mut cert_builder = openssl::x509::X509Builder::new()?;
-        cert_builder.set_version(2)?;
-        cert_builder.set_not_before(&not_before)?;
-        cert_builder.set_not_after(&not_after)?;
-        cert_builder.set_serial_number(&serial_number_asn)?;
-        cert_builder.set_subject_name(&subject_name)?;
-        cert_builder.set_pubkey(pub_key)?;
-        let ca_cert = self.ca_cert_stack.first().unwrap(); // safe here
-        let issuer = ca_cert.subject_name();
-        cert_builder.set_issuer_name(issuer)?;
-
+        cert_builder: &mut openssl::x509::X509Builder,
+    ) -> Result<(), anyhow::Error> {
         let basic_constraints = openssl::x509::extension::BasicConstraints::new()
             .critical()
             .pathlen(0)
@@ -116,6 +75,176 @@ impl Crypto {
             .key_encipherment()
             .build()?;
         cert_builder.append_extension(ku)?;
+        Ok(())
+    }
+
+    pub fn copy_extensions(
+        &self,
+        extensions: &openssl::stack::Stack<openssl::x509::X509Extension>,
+        cert_builder: &mut openssl::x509::X509Builder,
+        ca_cert: &openssl::x509::X509,
+    ) -> Result<(), anyhow::Error> {
+        for ext in extensions.iter() {
+            let ext_der = ext.to_der()?;
+            debug!("{:x?}", ext_der);
+            let res = x509_parser::extensions::X509Extension::from_der(ext_der.as_ref());
+            match res {
+                Ok((_rem, ext)) => {
+                    debug!("Extension OID: {}", ext.oid);
+                    debug!("  Critical: {}", ext.critical);
+                    let parsed_ext = ext.parsed_extension();
+                    if parsed_ext.unsupported() || parsed_ext.error().is_some() {
+                        continue;
+                    }
+                    match parsed_ext {
+                        ParsedExtension::SubjectAlternativeName(san) => {
+                            let ext_ctx = cert_builder.x509v3_context(Some(ca_cert), None);
+                            let mut san_ext = &mut openssl::x509::extension::SubjectAlternativeName::new();
+                            if ext.critical {
+                                san_ext = san_ext.critical();
+                            }
+
+                            for item  in san.general_names.iter() {
+                                match item {
+                                    x509_parser::prelude::GeneralName::DNSName(name) => {
+                                        san_ext.dns(name);
+                                    }
+                                    x509_parser::prelude::GeneralName::IPAddress(ip) => {
+                                        if ip.len() == 4 { // ipv4
+                                            // ip is in network byte order (bit endian)
+                                            let mut rdr = Cursor::new(ip);
+                                            let addr = rdr.read_u32::<BigEndian>().unwrap();
+                                            let ipv4 = std::net::Ipv4Addr::from(addr);
+                                            san_ext.ip(&ipv4.to_string());
+                                        } else if ip.len() == 16 { // ipv6
+                                            // ip is in network byte order (bit endian)
+                                            let mut rdr = Cursor::new(ip);
+                                            let addr = rdr.read_u128::<BigEndian>().unwrap();
+                                            let ipv6 = std::net::Ipv6Addr::from(addr);
+                                            san_ext.ip(&ipv6.to_string());
+                                        } else {
+                                            debug!("invalid IP address encoded {:?}",ip);
+                                        }
+                                    },
+                                    _ => { debug!("SAN type not supported: {:?}",item) }
+                                }
+                            }
+                            let san_ext = san_ext.build(&ext_ctx)?;
+                            cert_builder.append_extension(san_ext)?;
+                        },
+                        ParsedExtension::KeyUsage(ku) => {
+                            let mut out = &mut openssl::x509::extension::KeyUsage::new();
+                            if ext.critical { out = out.critical(); }
+                            if ku.crl_sign() { out = out.crl_sign(); }
+                            if ku.data_encipherment() { out = out.data_encipherment(); }
+                            if ku.decipher_only() { out = out.decipher_only(); }
+                            if ku.digital_signature() { out = out.digital_signature(); }
+                            if ku.encipher_only() { out = out.encipher_only(); }
+                            if ku.key_agreement() { out = out.key_agreement(); }
+                            if ku.key_cert_sign() { out = out.key_cert_sign(); }
+                            if ku.key_encipherment() { out = out.key_encipherment(); }
+                            if ku.non_repudiation() { out = out.non_repudiation(); }
+                            cert_builder.append_extension(out.build()?)?;
+                        }
+                        ParsedExtension::BasicConstraints(bc) => {
+                            let mut out = &mut openssl::x509::extension::BasicConstraints::new();
+                            if ext.critical { out = out.critical(); }
+                            if bc.ca { out = out.ca(); }
+                            if bc.path_len_constraint.is_some() { out = out.pathlen(bc.path_len_constraint.unwrap()); }
+                            cert_builder.append_extension(out.build()?)?;
+                        }
+                        ParsedExtension::ExtendedKeyUsage(eku) => {
+                            let mut out = &mut openssl::x509::extension::ExtendedKeyUsage::new();
+                            if ext.critical { out = out.critical(); }
+                            if eku.client_auth { out = out.client_auth(); }
+                            if eku.code_signing { out = out.code_signing(); }
+                            if eku.email_protection { out = out.email_protection(); }
+                            if eku.ocsp_signing {
+                                let oid: [u8;8] = oid!(raw 1.3.6.1.5.5.7.3.9);
+                                out = out.other(std::str::from_utf8(&oid).unwrap());
+                            }
+                            if eku.server_auth { out = out.server_auth(); }
+                            if eku.time_stamping { out = out.time_stamping(); }
+                            if eku.any {
+                                let oid: [u8;4] = oid!(raw 2.5.29.37.0);
+                                out = out.other(std::str::from_utf8(&oid).unwrap());
+                            }
+                            cert_builder.append_extension(out.build()?)?;
+                        }
+                        ParsedExtension::UnsupportedExtension{oid} => {
+                            debug!("unsupported extension: {:?}", oid);
+                            continue;
+                        },
+                        ParsedExtension::ParseError{error} => {
+                            debug!("error in parsing extension: {:?}", error);
+                            continue;
+                        }
+                        _ => {} // ignore extension
+                    }
+                },
+                _ => {
+                    debug!("x509 extension parsing failed: {:?}", res);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn create_cert(
+        &self,
+        pub_key: &openssl::pkey::PKey<openssl::pkey::Public>,
+        cn: &str,
+        csr: &Option<openssl::x509::X509Req>,
+        days: u32,
+    ) -> Result<openssl::x509::X509> {
+        let serial_number = openssl::bn::BigNum::from_u32(1)?;
+        let serial_number_asn = openssl::asn1::Asn1Integer::from_bn(&serial_number)?;
+        let not_before = openssl::asn1::Asn1Time::days_from_now(0)?;
+        let not_after = openssl::asn1::Asn1Time::days_from_now(days)?;
+
+        let subject_name = match csr {
+            Some(csr) => {
+                csr.subject_name()
+            },
+            None => {
+                let mut subject_name = openssl::x509::X509NameBuilder::new()?;
+                subject_name.append_entry_by_text("C", "DE")?;
+                subject_name.append_entry_by_text("ST", "BY")?;
+                subject_name.append_entry_by_text("O", "conplement AG")?;
+                subject_name.append_entry_by_text("CN", cn)?;
+                &subject_name.build()
+            }
+        };
+
+        let mut cert_builder = openssl::x509::X509Builder::new()?;
+        cert_builder.set_version(2)?;
+        cert_builder.set_not_before(&not_before)?;
+        cert_builder.set_not_after(&not_after)?;
+        cert_builder.set_serial_number(&serial_number_asn)?;
+        cert_builder.set_subject_name(subject_name)?;
+        cert_builder.set_pubkey(pub_key)?;
+        let ca_cert = self.ca_cert_stack.first().unwrap(); // safe here
+        let issuer = ca_cert.subject_name();
+        cert_builder.set_issuer_name(issuer)?;
+    
+        match csr {
+            Some(csr) => {
+                // Copy extensions from CSR if present
+                match csr.extensions() {
+                    Ok(extensions) => {
+                        self.copy_extensions(&extensions, &mut cert_builder, ca_cert)?;
+                    }
+                    Err(err) => {
+                        debug!("Could not read extensions from CSR: {:?}", err);
+                        self.default_extensions(&mut cert_builder)?;
+                    }
+                }
+            },
+            None => {
+                self.default_extensions(&mut cert_builder)?;
+            },
+        }
+
         let ski = openssl::x509::extension::SubjectKeyIdentifier::new()
             .build(&cert_builder.x509v3_context(Some(ca_cert), None))?;
         cert_builder.append_extension(ski)?;
@@ -196,6 +325,9 @@ impl Crypto {
 
 #[cfg(test)]
 mod tests {
+    use anyhow::Context;
+    use log::debug;
+
     fn create_cert_from_scatch(key: &openssl::rsa::Rsa<openssl::pkey::Private>) -> Vec<u8> {
         let serial_number = openssl::bn::BigNum::from_u32(1).unwrap();
         let serial_number_asn = openssl::asn1::Asn1Integer::from_bn(&serial_number).unwrap();
@@ -258,7 +390,7 @@ mod tests {
 
         let crypto = super::Crypto::new(&private_key_pem, &ca_cert)?;
         let (device_cert_pem, device_key_pem) =
-            crypto.create_cert_and_key("TestDevice", &None, 1)?;
+            crypto.create_cert_and_key("TestDevice", 1)?;
 
         // keys and certs need to be parseable PEM
         let device_private_key = openssl::rsa::Rsa::private_key_from_pem(&device_key_pem)?;
@@ -294,5 +426,52 @@ mod tests {
         assert!(csr.verify(csr.public_key().unwrap().as_ref()).unwrap());
         assert!(csr.verify(cert.public_key().unwrap().as_ref()).unwrap());
         assert_eq!(csr_subject, cert_subject);
+    }
+
+    #[test]
+    fn can_sign_intermediate_from_csr() {
+        env_logger::init();
+        let rootca_key_str = std::fs::read_to_string("test-data/root-ca.key").unwrap();
+        let rootca_cert_str = std::fs::read_to_string("test-data/root-ca.crt").unwrap();
+        let crypto = crate::Crypto::new(rootca_key_str.as_bytes(), rootca_cert_str.as_bytes()).unwrap();
+
+        let intermediate_csr_str = std::fs::read_to_string("test-data/intermediate-ca.csr").unwrap();
+        let pkcs10 = openssl::x509::X509Req::from_pem(intermediate_csr_str.as_bytes())
+            .with_context(|| "couldn't read in certificate sign request as pem").unwrap();
+
+        let pub_key = pkcs10
+            .public_key()
+            .with_context(|| "couldn't extract public key from certificate signing request").unwrap();
+
+        debug!("pkcs10 subject_name: {:?}", pkcs10.subject_name());
+        let cname = pkcs10
+            .subject_name()
+            .entries_by_nid(openssl::nid::Nid::COMMONNAME)
+            .next()
+            .with_context(|| "failed to get common name from csr").unwrap()
+            .data()
+            .as_utf8()
+            .with_context(|| "couldn't convert csr cname to openssl string").unwrap()
+            .to_string();
+
+        let cert = crypto.create_cert(&pub_key, &cname, &Some(pkcs10), 1).unwrap();
+        std::fs::write("generated_intermediate.crt",&cert.to_pem().unwrap()).unwrap();
+
+        let key = openssl::rsa::Rsa::generate(4096).unwrap();
+        let private_key_pem = key.private_key_to_pem().unwrap();
+        let cert_pem = create_cert_from_scatch(&key);
+        let crypto = super::Crypto::new(&private_key_pem, &cert_pem).unwrap();
+        let csr =
+            super::Crypto::create_csr_from_key_and_cert_raw(&private_key_pem, &cert_pem).unwrap();
+        let cert = crypto.ca_cert_stack.first().unwrap();
+        let csr = openssl::x509::X509Req::from_pem(&csr).unwrap();
+        let csr_subject = csr.subject_name().to_der().unwrap();
+        let cert_subject = cert.subject_name().to_der().unwrap();
+
+        assert!(csr.verify(csr.public_key().unwrap().as_ref()).unwrap());
+        assert!(csr.verify(cert.public_key().unwrap().as_ref()).unwrap());
+        assert_eq!(csr_subject, cert_subject);
+
+
     }
 }
