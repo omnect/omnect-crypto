@@ -149,8 +149,11 @@ impl Crypto {
                         ParsedExtension::BasicConstraints(bc) => {
                             let mut out = &mut openssl::x509::extension::BasicConstraints::new();
                             if ext.critical { out = out.critical(); }
-                            if bc.ca { out = out.ca(); }
-                            if bc.path_len_constraint.is_some() { out = out.pathlen(bc.path_len_constraint.unwrap()); }
+                            if bc.ca { out = out.ca().pathlen(0); }
+                            // Security constraint - least priviledge:
+                            //   Do not copy pathlen from CSR, instead force it to 0 so the cert only can sign leaf certs.
+                            // Next line would use pathlen from CSR:
+                            //   if bc.path_len_constraint.is_some() { out = out.pathlen(bc.path_len_constraint.unwrap()); }
                             cert_builder.append_extension(out.build()?)?;
                         }
                         ParsedExtension::ExtendedKeyUsage(eku) => {
@@ -457,21 +460,14 @@ mod tests {
         let cert = crypto.create_cert(&pub_key, &cname, &Some(pkcs10), 1).unwrap();
         std::fs::write("generated_intermediate.crt",&cert.to_pem().unwrap()).unwrap();
 
-        let key = openssl::rsa::Rsa::generate(4096).unwrap();
-        let private_key_pem = key.private_key_to_pem().unwrap();
-        let cert_pem = create_cert_from_scatch(&key);
-        let crypto = super::Crypto::new(&private_key_pem, &cert_pem).unwrap();
-        let csr =
-            super::Crypto::create_csr_from_key_and_cert_raw(&private_key_pem, &cert_pem).unwrap();
-        let cert = crypto.ca_cert_stack.first().unwrap();
-        let csr = openssl::x509::X509Req::from_pem(&csr).unwrap();
-        let csr_subject = csr.subject_name().to_der().unwrap();
-        let cert_subject = cert.subject_name().to_der().unwrap();
+        let response = std::process::Command::new("openssl")
+            .args(["x509","-text","-in","generated_intermediate.crt","-noout"])
+            .output().unwrap().stdout;
+        let response = std::str::from_utf8(&response).unwrap();
 
-        assert!(csr.verify(csr.public_key().unwrap().as_ref()).unwrap());
-        assert!(csr.verify(cert.public_key().unwrap().as_ref()).unwrap());
-        assert_eq!(csr_subject, cert_subject);
-
+        assert!(response.contains("CA:TRUE, pathlen:0")); // Basic Constaints CA, pathlen 0 - note that CSR has pathlen 1, this change is intentional.
+        assert!(response.contains("DNS:testdomain.de, IP Address:127.0.0.1")); // Subject Alternative Name
+        assert!(response.contains("Digital Signature, Certificate Sign, CRL Sign")); // KeyUsage
 
     }
 }
