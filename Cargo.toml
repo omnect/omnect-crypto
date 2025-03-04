@@ -7,7 +7,7 @@ license = "MIT OR Apache-2.0"
 name = "omnect-crypto"
 readme = "README.md"
 repository = "https://github.com/omnect/omnect-crypto.git"
-version = "0.4.2"
+version = "0.5.0"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -16,3 +16,13 @@ anyhow = "1"
 log = "0.4"
 openssl = "0.10"
 openssl-sys = "0.9"
+x509-parser = "0.15"
+der = "0.7"
+byteorder = "1.5"
+
+[dependencies.der-parser]
+version = "8.1.0"
+features = ["bigint"]
+
+[dev-dependencies]
+env_logger = "*"
